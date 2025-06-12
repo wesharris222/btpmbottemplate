@@ -1,0 +1,342 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "botName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name for the bot (will be used for various resources)"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Azure region for deployment"
+      }
+    },
+    "beyondTrustBaseUrl": {
+      "type": "string",
+      "metadata": {
+        "description": "Base URL for BeyondTrust API (e.g., https://xxxx-services.pm.beyondtrustcloud.com)"
+      }
+    },
+    "beyondTrustClientId": {
+      "type": "string",
+      "metadata": {
+        "description": "BeyondTrust Client ID"
+      }
+    },
+    "beyondTrustClientSecret": {
+      "type": "securestring",
+      "metadata": {
+        "description": "BeyondTrust Client Secret"
+      }
+    },
+    "teamsChannelName": {
+      "type": "string",
+      "defaultValue": "Bots Mansion",
+      "metadata": {
+        "description": "Name of Teams channel"
+      }
+    },
+    "gitRepoUrl": {
+      "type": "string",
+      "defaultValue": "https://github.com/wesharris222/btpmapprovalsbot",
+      "metadata": {
+        "description": "URL to the git repository containing bot code"
+      }
+    }
+  },
+  "variables": {
+    "storageAccountName": "[concat(toLower(replace(parameters('botName'), '-', '')), 'stor', uniqueString(resourceGroup().id))]",
+    "appServicePlanName": "[concat(parameters('botName'), '-plan')]",
+    "functionAppName": "[concat(toLower(replace(parameters('botName'), '-', '')), 'func', uniqueString(resourceGroup().id))]",
+    "webAppName": "[parameters('botName')]",
+    "deploymentScriptName": "[concat(parameters('botName'), '-setup-script')]",
+    "userAssignedIdentityName": "[concat(parameters('botName'), '-identity')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[variables('userAssignedIdentityName')]",
+      "location": "[parameters('location')]"
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceGroup().id, variables('userAssignedIdentityName'), 'Contributor')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('userAssignedIdentityName'))]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Authorization/roleDefinitions/b24988ac-6180-42a0-ab88-20f7382dd24c')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('userAssignedIdentityName'))).principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('storageAccountName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "accessTier": "Hot"
+      }
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('appServicePlanName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "F1",
+        "tier": "Free"
+      },
+      "properties": {
+        "reserved": false
+      }
+    },
+    {
+      "type": "Microsoft.Resources/deploymentScripts",
+      "apiVersion": "2023-08-01",
+      "name": "[variables('deploymentScriptName')]",
+      "location": "[parameters('location')]",
+      "kind": "AzurePowerShell",
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('userAssignedIdentityName'))]",
+        "[resourceId('Microsoft.Authorization/roleAssignments', guid(resourceGroup().id, variables('userAssignedIdentityName'), 'Contributor'))]"
+      ],
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('userAssignedIdentityName'))]": {}
+        }
+      },
+      "properties": {
+        "azPowerShellVersion": "11.0",
+        "scriptContent": "[concat('param([string]$botName, [string]$tenantId, [string]$gitRepoUrl, [string]$resourceGroupName, [string]$storageAccountName, [string]$functionAppName)\n\n# Create Azure AD App Registration\nWrite-Host \"Creating Azure AD application registration...\"\n$app = New-AzADApplication -DisplayName $botName -SignInAudience \"AzureADMultipleOrgs\"\n$appId = $app.AppId\n\n# Create client secret\nWrite-Host \"Creating client secret...\"\n$secret = New-AzADAppCredential -ObjectId $app.Id -DisplayName \"BotSecret\"\n$appPassword = $secret.SecretText\n\n# Create Bot Channels Registration\nWrite-Host \"Creating Bot Channels Registration...\"\n$botEndpoint = \"https://$botName.azurewebsites.net/api/messages\"\n\n# Output the results\n$DeploymentScriptOutputs = @{}\n$DeploymentScriptOutputs[\"appId\"] = $appId\n$DeploymentScriptOutputs[\"appPassword\"] = $appPassword\n$DeploymentScriptOutputs[\"botEndpoint\"] = $botEndpoint\n')]",
+        "arguments": "[concat('-botName \"', parameters('botName'), '\" -tenantId \"', subscription().tenantId, '\" -gitRepoUrl \"', parameters('gitRepoUrl'), '\" -resourceGroupName \"', resourceGroup().name, '\" -storageAccountName \"', variables('storageAccountName'), '\" -functionAppName \"', variables('functionAppName'), '\"')]",
+        "timeout": "PT10M",
+        "cleanupPreference": "OnSuccess",
+        "retentionInterval": "P1D"
+      }
+    },
+    {
+      "type": "Microsoft.BotService/botServices",
+      "apiVersion": "2022-09-15",
+      "name": "[parameters('botName')]",
+      "location": "global",
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deploymentScripts', variables('deploymentScriptName'))]"
+      ],
+      "sku": {
+        "name": "F0"
+      },
+      "kind": "azurebot",
+      "properties": {
+        "displayName": "[parameters('botName')]",
+        "iconUrl": "https://docs.botframework.com/static/devportal/client/images/bot-framework-default.png",
+        "endpoint": "[reference(resourceId('Microsoft.Resources/deploymentScripts', variables('deploymentScriptName'))).outputs.botEndpoint]",
+        "msaAppId": "[reference(resourceId('Microsoft.Resources/deploymentScripts', variables('deploymentScriptName'))).outputs.appId]",
+        "msaAppTenantId": "[subscription().tenantId]",
+        "msaAppType": "MultiTenant"
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('functionAppName')]",
+      "location": "[parameters('location')]",
+      "kind": "functionapp",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+        "[resourceId('Microsoft.Resources/deploymentScripts', variables('deploymentScriptName'))]"
+      ],
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "siteConfig": {
+          "appSettings": [
+            {
+              "name": "AzureWebJobsStorage",
+              "value": "[concat('DefaultEndpointsProtocol=https;AccountName=', variables('storageAccountName'), ';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), '2023-01-01').keys[0].value)]"
+            },
+            {
+              "name": "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING",
+              "value": "[concat('DefaultEndpointsProtocol=https;AccountName=', variables('storageAccountName'), ';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), '2023-01-01').keys[0].value)]"
+            },
+            {
+              "name": "WEBSITE_CONTENTSHARE",
+              "value": "[toLower(variables('functionAppName'))]"
+            },
+            {
+              "name": "FUNCTIONS_EXTENSION_VERSION",
+              "value": "~4"
+            },
+            {
+              "name": "FUNCTIONS_WORKER_RUNTIME",
+              "value": "node"
+            },
+            {
+              "name": "WEBSITE_NODE_DEFAULT_VERSION",
+              "value": "~20"
+            },
+            {
+              "name": "MicrosoftAppId",
+              "value": "[reference(resourceId('Microsoft.Resources/deploymentScripts', variables('deploymentScriptName'))).outputs.appId]"
+            },
+            {
+              "name": "MicrosoftAppPassword",
+              "value": "[reference(resourceId('Microsoft.Resources/deploymentScripts', variables('deploymentScriptName'))).outputs.appPassword]"
+            },
+            {
+              "name": "MicrosoftAppTenantId",
+              "value": "[subscription().tenantId]"
+            },
+            {
+              "name": "AzureStorageConnectionString",
+              "value": "[concat('DefaultEndpointsProtocol=https;AccountName=', variables('storageAccountName'), ';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), '2023-01-01').keys[0].value)]"
+            },
+            {
+              "name": "BEYONDTRUST_BASE_URL",
+              "value": "[parameters('beyondTrustBaseUrl')]"
+            },
+            {
+              "name": "BEYONDTRUST_CLIENT_ID",
+              "value": "[parameters('beyondTrustClientId')]"
+            },
+            {
+              "name": "BEYONDTRUST_CLIENT_SECRET",
+              "value": "[parameters('beyondTrustClientSecret')]"
+            },
+            {
+              "name": "NODE_ENV",
+              "value": "production"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('webAppName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+        "[resourceId('Microsoft.Resources/deploymentScripts', variables('deploymentScriptName'))]",
+        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]"
+      ],
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "siteConfig": {
+          "nodeVersion": "~20",
+          "appSettings": [
+            {
+              "name": "MicrosoftAppId",
+              "value": "[reference(resourceId('Microsoft.Resources/deploymentScripts', variables('deploymentScriptName'))).outputs.appId]"
+            },
+            {
+              "name": "MicrosoftAppPassword",
+              "value": "[reference(resourceId('Microsoft.Resources/deploymentScripts', variables('deploymentScriptName'))).outputs.appPassword]"
+            },
+            {
+              "name": "MicrosoftAppTenantId",
+              "value": "[subscription().tenantId]"
+            },
+            {
+              "name": "AzureStorageConnectionString",
+              "value": "[concat('DefaultEndpointsProtocol=https;AccountName=', variables('storageAccountName'), ';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), '2023-01-01').keys[0].value)]"
+            },
+            {
+              "name": "BEYONDTRUST_BASE_URL",
+              "value": "[parameters('beyondTrustBaseUrl')]"
+            },
+            {
+              "name": "BEYONDTRUST_CLIENT_ID",
+              "value": "[parameters('beyondTrustClientId')]"
+            },
+            {
+              "name": "BEYONDTRUST_CLIENT_SECRET",
+              "value": "[parameters('beyondTrustClientSecret')]"
+            },
+            {
+              "name": "NODE_ENV",
+              "value": "production"
+            },
+            {
+              "name": "FUNCTIONAPP_URL",
+              "value": "[concat('https://', variables('functionAppName'), '.azurewebsites.net/api/handleapproval')]"
+            },
+            {
+              "name": "FUNCTIONAPP_KEY",
+              "value": "[listkeys(concat(resourceId('Microsoft.Web/sites', variables('functionAppName')), '/host/default/'),'2023-01-01').functionKeys.default]"
+            }
+          ],
+          "cors": {
+            "allowedOrigins": [
+              "https://teams.microsoft.com",
+              "https://*.teams.microsoft.com",
+              "https://outlook.office.com",
+              "https://outlook.office365.com"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Resources/deploymentScripts",
+      "apiVersion": "2023-08-01",
+      "name": "[concat(variables('deploymentScriptName'), '-deploy-code')]",
+      "location": "[parameters('location')]",
+      "kind": "AzurePowerShell",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('webAppName'))]",
+        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]"
+      ],
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('userAssignedIdentityName'))]": {}
+        }
+      },
+      "properties": {
+        "azPowerShellVersion": "11.0",
+        "scriptContent": "[concat('param([string]$gitRepoUrl, [string]$webAppName, [string]$functionAppName, [string]$resourceGroupName, [string]$botId, [string]$botName)\n\n# Install required modules\nInstall-Module -Name Az.Websites -Force -AllowClobber\n\n# Clone repository\n$tempPath = \"/tmp/bot-repo\"\nif (Test-Path $tempPath) { Remove-Item -Recurse -Force $tempPath }\ngit clone $gitRepoUrl $tempPath\nSet-Location $tempPath\n\n# Install dependencies\nnpm install\nSet-Location \"$tempPath/functions\"\nnpm install\nSet-Location $tempPath\n\n# Create deployment packages\n$botFiles = @(\"bot.js\", \"index.js\", \"package.json\", \"package-lock.json\", \"node_modules\")\n$botZip = \"/tmp/bot.zip\"\nCompress-Archive -Path $botFiles -DestinationPath $botZip -Force\n\n# Deploy bot\nPublish-AzWebApp -ResourceGroupName $resourceGroupName -Name $webAppName -ArchivePath $botZip -Force\n\n# Create function package\nSet-Location \"$tempPath/functions\"\n$functionFiles = @(\"handleapproval\", \"package.json\", \"package-lock.json\", \"node_modules\")\n$functionZip = \"/tmp/function.zip\"\nCompress-Archive -Path $functionFiles -DestinationPath $functionZip -Force\n\n# Deploy function\nPublish-AzWebApp -ResourceGroupName $resourceGroupName -Name $functionAppName -ArchivePath $functionZip -Force\n\n# Create Teams manifest\n$manifest = @{\n    \"\\$schema\" = \"https://developer.microsoft.com/en-us/json-schemas/teams/v1.14/MicrosoftTeams.schema.json\"\n    \"manifestVersion\" = \"1.14\"\n    \"version\" = \"1.0.0\"\n    \"id\" = $botId\n    \"packageName\" = \"com.microsoft.teams.approvalbot\"\n    \"developer\" = @{\n        \"name\" = \"Approval Bot Team\"\n        \"websiteUrl\" = \"https://$webAppName.azurewebsites.net\"\n        \"privacyUrl\" = \"https://$webAppName.azurewebsites.net/privacy\"\n        \"termsOfUseUrl\" = \"https://$webAppName.azurewebsites.net/termsofuse\"\n    }\n    \"name\" = @{\n        \"short\" = $botName\n        \"full\" = \"$botName - Approval Management\"\n    }\n    \"description\" = @{\n        \"short\" = \"Manages approval requests for privileged access\"\n        \"full\" = \"This bot helps manage and process approval requests for privileged access in a secure and efficient manner.\"\n    }\n    \"icons\" = @{\n        \"color\" = \"color.png\"\n        \"outline\" = \"outline.png\"\n    }\n    \"accentColor\" = \"#FFFFFF\"\n    \"bots\" = @(\n        @{\n            \"botId\" = $botId\n            \"scopes\" = @(\"team\", \"personal\")\n            \"supportsFiles\" = $false\n            \"isNotificationOnly\" = $false\n        }\n    )\n    \"permissions\" = @(\"messageTeamMembers\")\n    \"validDomains\" = @(\"$webAppName.azurewebsites.net\")\n}\n\n# Save manifest\n$manifestJson = $manifest | ConvertTo-Json -Depth 10\n$manifestPath = \"/tmp/manifest.json\"\n$manifestJson | Out-File -FilePath $manifestPath -Encoding UTF8\n\n# Output manifest content for download\n$DeploymentScriptOutputs = @{}\n$DeploymentScriptOutputs[\"teamsManifest\"] = $manifestJson\n')]",
+        "arguments": "[concat('-gitRepoUrl \"', parameters('gitRepoUrl'), '\" -webAppName \"', variables('webAppName'), '\" -functionAppName \"', variables('functionAppName'), '\" -resourceGroupName \"', resourceGroup().name, '\" -botId \"', reference(resourceId('Microsoft.Resources/deploymentScripts', variables('deploymentScriptName'))).outputs.appId, '\" -botName \"', parameters('botName'), '\"')]",
+        "timeout": "PT30M",
+        "cleanupPreference": "OnSuccess",
+        "retentionInterval": "P1D"
+      }
+    }
+  ],
+  "outputs": {
+    "botId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deploymentScripts', variables('deploymentScriptName'))).outputs.appId]"
+    },
+    "botEndpoint": {
+      "type": "string",
+      "value": "[concat('https://', variables('webAppName'), '.azurewebsites.net')]"
+    },
+    "functionAppUrl": {
+      "type": "string",
+      "value": "[concat('https://', variables('functionAppName'), '.azurewebsites.net')]"
+    },
+    "teamsManifest": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deploymentScripts', concat(variables('deploymentScriptName'), '-deploy-code'))).outputs.teamsManifest]"
+    },
+    "nextSteps": {
+      "type": "string",
+      "value": "1. Enable MS Teams channel in Azure Portal for your bot\n2. Copy the Teams manifest from the output above\n3. Create a manifest.json file with that content\n4. Create a Teams app package zip with the manifest and icons\n5. Upload to Teams"
+    }
+  }
+}

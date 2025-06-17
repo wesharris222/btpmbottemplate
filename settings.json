@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "botName": {
+      "value": ""
+    },
+    "resourceGroupName": {
+      "value": ""
+    },
+    "location": {
+      "value": "westus"
+    },
+    "tenantId": {
+      "value": ""
+    },
+    "beyondTrustBaseUrl": {
+      "value": "https://<pmsite>-services.pm.beyondtrustcloud.com"
+    },
+    "beyondTrustClientId": {
+      "value": ""
+    },
+    "beyondTrustClientSecret": {
+      "value": ""
+    },
+    "teamsChannelName": {
+      "value": "Bots Mansion"
+    },
+    "gitRepoUrl": {
+      "value": "https://github.com/wesharris222/btpmapprovalsbot"
+    }
+  }
+}
